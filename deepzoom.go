@@ -179,20 +179,22 @@ func (ic *ImageCreator) New(source, format string, tileSize, overlap int) *Image
 
 func (ic *ImageCreator) create(destination string) {
 	imageFiles := getOrCreatePath(getFilesPath(destination))
+	format := ic.dzid.Format
 	for level := 0; level < ic.dzid.NumLevels(); level++ {
 		levelDir := getOrCreatePath(path.Join(imageFiles, strconv.Itoa(level)))
 		levelImage := ic.getImage(level)
 		columns, rows := ic.dzid.getNumTiles(level)
 		for column := 0; column < columns; column++ {
 			for row := 0; row < rows; row++ {
-				bounds := ic.dzid.getTileBounds(level, column, row)
-				tile := imaging.Crop(levelImage, bounds)
-				format := ic.dzid.Format
-				tilePath := path.Join(levelDir, fmt.Sprintf("%d_%d.%s", column, row, format))
-				out, err := os.Create(tilePath)
-				check(err)
-				err = jpeg.Encode(out, tile, &jpeg.Options{Quality: int(ic.ImageQuality * 100)})
-				check(err)
+				go func(ic *ImageCreator, levelImage *image.Image, levelDir, format string, level, column, row int) {
+					bounds := ic.dzid.getTileBounds(level, column, row)
+					tile := imaging.Crop(*levelImage, bounds)
+					tilePath := path.Join(levelDir, fmt.Sprintf("%d_%d.%s", column, row, format))
+					out, err := os.Create(tilePath)
+					check(err)
+					err = jpeg.Encode(out, tile, &jpeg.Options{Quality: int(ic.ImageQuality * 100)})
+					check(err)
+				}(ic, &levelImage, levelDir, format, level, column, row)
 			}
 		}
 	}
@@ -222,7 +224,7 @@ func init() {
 	flag.Usage = usage
 }
 
-// sample usage: deepzoom -s /home/harold/go_tests/deepzoom/test.jpg -d /home/harold/go_tests/deepzoom/test.dzi
+// sample usage: deepzoom -s test.jpg -d test.dzi
 func main() {
 	flag.Parse()
 
