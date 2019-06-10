@@ -5,6 +5,7 @@ import (
 	"flag"
 	"github.com/fogleman/gg"
 	"github.com/nfnt/resize"
+	"github.com/panjf2000/ants"
 	"image"
 	"image/draw"
 	"image/jpeg"
@@ -46,12 +47,12 @@ func generateFinImage(thumbnailWidth, thumbnailHeight, columnLength, rowWidth in
 	return image.NewRGBA(finRect)
 }
 
-func resizeImg(img image.Image, thumbnailSize uint) image.Image {
-	rezImg := resize.Thumbnail(thumbnailSize, thumbnailSize, img, resize.NearestNeighbor)
-	return rezImg
+func resizeImg(img *image.Image, thumbnailSize uint) *image.Image {
+	rezImg := resize.Thumbnail(thumbnailSize, thumbnailSize, *img, resize.NearestNeighbor) // pillow use NEAREST filter as default
+	return &rezImg
 }
 
-func getDataFromJsonFile(path string) InputJsonData {
+func getDataFromJsonFile(path string) *InputJsonData {
 	jsonData, err := ioutil.ReadFile(path)
 	check(err)
 	var data InputJsonData
@@ -59,7 +60,7 @@ func getDataFromJsonFile(path string) InputJsonData {
 	if err != nil {
 		panic(err)
 	}
-	return data
+	return &data
 }
 
 func divmod(numerator, denominator int) (quotient, remainder int) {
@@ -70,20 +71,26 @@ func divmod(numerator, denominator int) (quotient, remainder int) {
 func getThumbnailWidthHeight(imgPath string, thumbnailSize uint) (thumbnailWidth, thumbnailHeight int) {
 	img, err := gg.LoadJPG(imgPath)
 	check(err)
-	img = resizeImg(img, thumbnailSize)
+	img = *resizeImg(&img, thumbnailSize)
 	thumbnailWidth = img.Bounds().Dx()
 	thumbnailHeight = img.Bounds().Dy()
 	return
 }
 
-func handleSingleImage(imgPath string, thumbnailSize uint, row, column int) (imgp ImageWithPosition) {
+func handleSingleImage(imgPath string, thumbnailSize uint, row, column int) (imgp *ImageWithPosition) {
 	img, err := gg.LoadJPG(imgPath)
 	check(err)
-	img = resizeImg(img, thumbnailSize)
+	img = *resizeImg(&img, thumbnailSize)
 	thumbnailWidth := img.Bounds().Dx()
 	thumbnailHeight := img.Bounds().Dy()
-	imgp = ImageWithPosition{img, row * thumbnailWidth, column * thumbnailHeight}
+	imgp = &ImageWithPosition{img, row * thumbnailWidth, column * thumbnailHeight}
 	return
+}
+
+type param struct {
+	imgPath       string
+	thumbnailSize uint
+	row, column   int
 }
 
 func generateJPG(imageFolderPath, jsonPath string, sampleInterval, columnLength int, thumbnailSize uint) *image.RGBA {
@@ -93,14 +100,25 @@ func generateJPG(imageFolderPath, jsonPath string, sampleInterval, columnLength 
 	thumbnailWidth, thumbnailHeight := getThumbnailWidthHeight(path.Join(imageFolderPath, "0.jpeg"), thumbnailSize)
 	row, column := 0, 0
 
-	c := make(chan ImageWithPosition, imgNum/sampleInterval)
+	c := make(chan *ImageWithPosition, imgNum/sampleInterval)
+	p, _ := ants.NewPoolWithFunc(1000, func(payload interface{}) {
+		params, ok := payload.(*param)
+		if !ok {
+			return
+		}
+		res := func(params *param) *ImageWithPosition {
+			return handleSingleImage(params.imgPath, params.thumbnailSize, params.row, params.column)
+		}(params)
+		c <- res
+	})
+
+	defer p.Release()
 
 	for i := 0; i <= imgNum-sampleInterval; i += sampleInterval {
 		row, column = divmod(i/sampleInterval, columnLength)
-		go func(row, column, i int) {
-			c <- handleSingleImage(path.Join(imageFolderPath, strconv.Itoa(i)+".jpeg"), thumbnailSize,
-				row, column)
-		}(row, column, i)
+		params := &param{path.Join(imageFolderPath, strconv.Itoa(i)+".jpeg"), thumbnailSize,
+			row, column}
+		_ = p.Invoke(params)
 	}
 
 	finImage := generateFinImage(thumbnailWidth, thumbnailHeight, columnLength, row+1)
